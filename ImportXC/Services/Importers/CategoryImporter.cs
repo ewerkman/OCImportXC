@@ -68,6 +68,8 @@ namespace ImportXC.Services.Importers
                                 };
                                 newCategories.Add(new NewCategory()
                                     {CatalogId = catalogId, Category = category});
+
+                                created++;
                             }
                             catch (OrderCloudException e)
                             {
