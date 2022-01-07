@@ -54,16 +54,20 @@ namespace ImportXC.Services.Importers
                         {
                             try
                             {
-                                await CreatePriceSchedule(client, sellableItemJson, productId);
+                                var hasPrice = await CreatePriceSchedule(client, sellableItemJson, productId);
                                 
                                 var product = new Product
                                 {
                                     ID = productId,
                                     Name = sellableItemJson["DisplayName"].ToString(),
                                     Active = true,
-                                    Description = sellableItemJson["Description"].ToString(),
-                                    DefaultPriceScheduleID = productId
+                                    Description = sellableItemJson["Description"].ToString()
                                 };
+
+                                if (hasPrice)
+                                {
+                                    product.DefaultPriceScheduleID = productId;
+                                }
                                 
                                 product.xp.brand = sellableItemJson["Brand"].ToString();
                                 product.xp.manufacturer = sellableItemJson["Manufacturer"].ToString();
@@ -81,13 +85,13 @@ namespace ImportXC.Services.Importers
                     }
                 });
 
-                Throttler.RunAsync(products, 100, 20, p => client.Products.CreateAsync(p));
+                await Throttler.RunAsync(products, 100, 20, p => client.Products.CreateAsync(p));
             }
             
             Console.WriteLine($"Products: Found: {found} - Created: {created} - Existing: {existing}");
         }
 
-        private async Task CreatePriceSchedule(OrderCloudClient client, JToken sellableItemJson,
+        private async Task<bool> CreatePriceSchedule(OrderCloudClient client, JToken sellableItemJson,
             string productId)
         {
             var listPricingPolicy = sellableItemJson["Policies"]["$values"].FirstOrDefault(p =>
@@ -95,29 +99,52 @@ namespace ImportXC.Services.Importers
                 "Sitecore.Commerce.Plugin.Pricing.ListPricingPolicy, Sitecore.Commerce.Plugin.Pricing");
             if (listPricingPolicy != null)
             {
-                var prices = listPricingPolicy["Prices"]["$values"];
-                var priceBreaks = new List<PriceBreak>();
-
-                foreach (var price in prices)
+                try
                 {
-                    priceBreaks.Add(new PriceBreak()
-                    {
-                        Price = decimal.Parse(price["Amount"].ToString()),
-                        Quantity = 0
-                    });
+                    await client.PriceSchedules.GetAsync(productId);
+
+                    return true;
                 }
-
-                var priceSchedule = new PriceSchedule()
+                catch (OrderCloudException ex)
                 {
-                    ID = productId,
-                    Name = productId,
-                    PriceBreaks = priceBreaks,
-                    UseCumulativeQuantity = true
-                };
+                    if (ex.HttpStatus == HttpStatusCode.NotFound) // Object does not exist
+                    {
+                        try
+                        {
+                            var prices = listPricingPolicy["Prices"]["$values"];
+                            var priceBreaks = new List<PriceBreak>();
 
-                await client.PriceSchedules.CreateAsync(priceSchedule);
+                            foreach (var price in prices)
+                            {
+                                priceBreaks.Add(new PriceBreak()
+                                {
+                                    Price = decimal.Parse(price["Amount"].ToString()),
+                                    Quantity = 0
+                                });
+                            }
+
+                            var priceSchedule = new PriceSchedule()
+                            {
+                                ID = productId,
+                                Name = productId,
+                                PriceBreaks = priceBreaks,
+                                UseCumulativeQuantity = true
+                            };
+
+                            await client.PriceSchedules.CreateAsync(priceSchedule);
+
+                            return true;
+                        }
+                        catch (OrderCloudException e)
+                        {
+                            Console.WriteLine(e);
+                            //TODO: Write to a report for manual retry later?
+                        }
+                    }
+                }
             }
 
+            return false;
         }
 
         private async Task CreateVariations(OrderCloudClient client, JToken sellableItemJson, Product createdProduct)
